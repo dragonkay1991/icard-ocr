@@ -1,115 +1,95 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>i-Kad OCR Scanner (Smart C3)</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta charset="UTF-8">
+<title>i-Kad OCR Scanner</title>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    background: #f5f5f5;
+    padding: 20px;
+  }
 
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      padding: 10px;
-      text-align: center;
-      background: #f5f5f5;
-    }
+  #cameraContainer {
+    width: 100%;
+    max-width: 420px;
+    margin: auto;
+    border: 2px solid #ccc;
+    border-radius: 10px;
+    overflow: hidden;
+    background: #000;
+    position: relative;
+  }
 
-    h2 {
-      margin-bottom: 10px;
-    }
+  video, canvas {
+    width: 100%;
+    display: block;
+  }
 
-    #cameraContainer {
-      position: relative;
-      width: 100%;
-      max-width: 480px;
-      margin: 0 auto;
-    }
+  #captureBtn, #confirmBtn {
+    width: 100%;
+    padding: 14px;
+    margin-top: 15px;
+    font-size: 18px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+  }
 
-    #video,
-    #captureCanvas {
-      width: 100%;
-      border-radius: 10px;
-      background: #000;
-    }
+  #captureBtn {
+    background: #2196f3;
+    color: white;
+  }
 
-    #captureCanvas {
-      display: none;
-    }
+  #confirmBtn {
+    background: #4caf50;
+    color: white;
+    display: none;
+  }
 
-    #scanFrame {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      width: 90%;
-      aspect-ratio: 1.586;
-      transform: translate(-50%, -50%);
-      border: 3px solid #00bcd4;
-      border-radius: 12px;
-      pointer-events: none;
-      box-shadow: 0 0 20px rgba(0,0,0,0.3);
-    }
+  #fields {
+    margin-top: 20px;
+    padding: 15px;
+    background: white;
+    border-radius: 8px;
+    font-size: 16px;
+  }
 
-    #resultBox {
-      margin-top: 15px;
-      text-align: left;
-      background: #fff;
-      padding: 10px;
-      border-radius: 8px;
-      box-shadow: 0 0 4px rgba(0,0,0,0.1);
-      font-size: 14px;
-      max-width: 480px;
-      margin-left: auto;
-      margin-right: auto;
-    }
-
-    #fields div {
-      margin-bottom: 4px;
-    }
-
-    button {
-      margin-top: 10px;
-      padding: 10px 18px;
-      font-size: 16px;
-      border-radius: 6px;
-      border: none;
-      background: #1976d2;
-      color: #fff;
-      cursor: pointer;
-    }
-
-    #log {
-      margin-top: 10px;
-      font-size: 11px;
-      text-align: left;
-      white-space: pre-wrap;
-      max-width: 480px;
-      margin-left: auto;
-      margin-right: auto;
-      color: #555;
-    }
-  </style>
-
-  <script src="https://unpkg.com/tesseract.js@4.0.2/dist/tesseract.min.js"></script>
+  #log {
+    margin-top: 20px;
+    padding: 10px;
+    background: #222;
+    color: #0f0;
+    height: 150px;
+    overflow-y: auto;
+    font-family: monospace;
+    font-size: 13px;
+    border-radius: 8px;
+  }
+</style>
 </head>
 
 <body>
-  <h2>i-Kad OCR Scanner (Smart C3)</h2>
 
-  <div id="cameraContainer">
-    <video id="video" autoplay playsinline></video>
-    <canvas id="captureCanvas"></canvas>
-    <div id="scanFrame"></div>
-  </div>
+<h2>i-Kad OCR Scanner</h2>
 
-  <button id="captureBtn">Capture &amp; Scan</button>
+<div id="cameraContainer">
+  <video id="video" autoplay playsinline></video>
+  <canvas id="captureCanvas" style="display:none;"></canvas>
+</div>
 
-  <div id="resultBox">
-    <strong>Extracted Data</strong>
-    <div id="fields"></div>
-    <button id="confirmBtn" style="display:none;">Confirm &amp; Save</button>
-  </div>
+<button id="captureBtn">Capture</button>
+<button id="confirmBtn">Save to Google Sheet</button>
 
-  <div id="log"></div>
+<div id="fields"></div>
 
-  <script src="script-smart.js"></script>
+<pre id="log"></pre>
+
+<!-- Tesseract.js -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
+
+<!-- Your JS file -->
+<script src="script.js"></script>
+
 </body>
 </html>
