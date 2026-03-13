@@ -67,20 +67,31 @@ function similarity(a, b) {
 /* Capture & Scan */
 captureBtn.addEventListener("click", async () => {
   try {
+    const canvas = captureCanvas;
+    if (!canvas) {
+      log("ERROR: captureCanvas not found in HTML.");
+      return;
+    }
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      log("ERROR: captureCanvas.getContext('2d') failed.");
+      return;
+    }
+
     if (!video.videoWidth || !video.videoHeight) {
       log("Video not ready.");
       return;
     }
 
     // Draw current frame to canvas
-    const ctx = captureCanvas.getContext("2d");
-    captureCanvas.width = video.videoWidth;
-    captureCanvas.height = video.videoHeight;
-    ctx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
     // Hide video, show captured image
     video.style.display = "none";
-    captureCanvas.style.display = "block";
+    canvas.style.display = "block";
 
     // Stop camera stream so the image stays frozen
     if (stream) {
@@ -102,7 +113,6 @@ async function runSmartOCR() {
   const imgW = captureCanvas.width;
   const imgH = captureCanvas.height;
 
-  // Upscale for better small-label detection
   const scale = 2;
   const upCanvas = document.createElement("canvas");
   upCanvas.width = imgW * scale;
@@ -150,11 +160,9 @@ async function runSmartOCR() {
     for (const label of labels) {
       const tokens = label.split(" ");
       let bestSim = similarity(text, label);
-
       for (const t of tokens) {
         bestSim = Math.max(bestSim, similarity(text, t));
       }
-
       if (bestSim >= 0.6) {
         if (!labelBoxes[label] || w.bbox.y0 < labelBoxes[label].y0) {
           labelBoxes[label] = w.bbox;
@@ -190,7 +198,6 @@ async function runSmartOCR() {
     }
   }
 
-  // C3 cropping
   const values = {
     NAME: "",
     PASSPORT: "",
@@ -291,7 +298,7 @@ async function runSmartOCR() {
   showFields(extracted);
 
   const missing = Object.entries(extracted)
-    .filter(([k, v]) => !v)
+    .filter(([_, v]) => !v)
     .map(([k]) => k.toUpperCase());
 
   if (missing.length) {
