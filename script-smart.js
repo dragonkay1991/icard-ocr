@@ -1,3 +1,7 @@
+/* ===========================
+   CAMERA + UI SETUP
+=========================== */
+
 const video = document.getElementById("video");
 const captureCanvas = document.getElementById("captureCanvas");
 const captureBtn = document.getElementById("captureBtn");
@@ -8,7 +12,6 @@ const logDiv = document.getElementById("log");
 let lastExtractedData = null;
 let stream = null;
 
-// Your Apps Script URL
 const APPS_SCRIPT_URL =
   "https://script.google.com/macros/s/AKfycbwq66OWAFID_aBqvMZpPp_vB1yuzOg3Fkz6ERpbhA3K-xj6JYKRPWJzstXkgxKFMo2o/exec";
 
@@ -16,7 +19,7 @@ function log(msg) {
   logDiv.textContent += msg + "\n";
 }
 
-/* Start back camera with autofocus */
+/* Start camera with autofocus */
 navigator.mediaDevices
   .getUserMedia({
     video: {
@@ -39,35 +42,21 @@ navigator.mediaDevices
   .catch((err) => log("Camera error: " + err));
 
 /* Tap-to-focus */
-async function tapToFocus() {
+document.getElementById("cameraContainer").addEventListener("click", async () => {
   if (!stream) return;
-
   const track = stream.getVideoTracks()[0];
-  const capabilities = track.getCapabilities();
+  try {
+    await track.applyConstraints({ advanced: [{ focusMode: "single-shot" }] });
+    setTimeout(() => {
+      track.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
+    }, 800);
+  } catch (e) {}
+});
 
-  if (capabilities.focusMode) {
-    try {
-      await track.applyConstraints({
-        advanced: [{ focusMode: "single-shot" }]
-      });
-      log("Tap-to-focus triggered.");
+/* ===========================
+   LEVENSHTEIN + SIMILARITY
+=========================== */
 
-      setTimeout(async () => {
-        await track.applyConstraints({
-          advanced: [{ focusMode: "continuous" }]
-        });
-        log("Continuous focus restored.");
-      }, 800);
-
-    } catch (err) {
-      log("Tap-to-focus not supported.");
-    }
-  }
-}
-
-document.getElementById("cameraContainer").addEventListener("click", tapToFocus);
-
-/* Levenshtein for fuzzy matching */
 function levenshtein(a, b) {
   a = a.toUpperCase();
   b = b.toUpperCase();
@@ -95,37 +84,58 @@ function similarity(a, b) {
   return maxLen === 0 ? 1 : 1 - dist / maxLen;
 }
 
-/* Capture & Scan */
+/* ===========================
+   CAPTURE BUTTON
+=========================== */
+
 captureBtn.addEventListener("click", async () => {
-  try {
-    const canvas = captureCanvas;
-    const ctx = canvas.getContext("2d");
+  const canvas = captureCanvas;
+  const ctx = canvas.getContext("2d");
 
-    if (!video.videoWidth || !video.videoHeight) {
-      log("Video not ready.");
-      return;
-    }
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  video.style.display = "none";
+  canvas.style.display = "block";
 
-    video.style.display = "none";
-    canvas.style.display = "block";
-
-    if (stream) {
-      stream.getTracks().forEach((t) => t.stop());
-      stream = null;
-    }
-
-    await runSmartOCR();
-
-  } catch (e) {
-    log("Capture error: " + e);
+  if (stream) {
+    stream.getTracks().forEach((t) => t.stop());
+    stream = null;
   }
+
+  await runSmartOCR();
 });
 
-/* Run OCR with fuzzy label detection + C3 cropping */
+/* ===========================
+   GROUP WORDS INTO LINES
+=========================== */
+
+function groupByLines(words, tolerance = 20) {
+  const sorted = [...words].sort((a, b) => a.bbox.y0 - b.bbox.y0);
+  const lines = [];
+  let current = [];
+  for (const w of sorted) {
+    if (!current.length) {
+      current.push(w);
+      continue;
+    }
+    const last = current[current.length - 1];
+    if (Math.abs(w.bbox.y0 - last.bbox.y0) < tolerance) {
+      current.push(w);
+    } else {
+      lines.push(current);
+      current = [w];
+    }
+  }
+  if (current.length) lines.push(current);
+  return lines;
+}
+
+/* ===========================
+   MAIN OCR ENGINE
+=========================== */
+
 async function runSmartOCR() {
   log("Running OCR...");
 
@@ -142,8 +152,7 @@ async function runSmartOCR() {
   const dataURL = upCanvas.toDataURL("image/png");
 
   const result = await Tesseract.recognize(dataURL, "eng", {
-    tessedit_char_whitelist:
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/.-,' ",
+    tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/.-,' ",
     logger: (m) =>
       log(
         m.status +
@@ -152,36 +161,28 @@ async function runSmartOCR() {
       ),
   });
 
-  log("OCR done.");
+  const words = (result.data.words || []).filter(
+    (w) => (w.text || "").trim().length > 0 && w.confidence > 40
+  );
 
-  const words = result.data.words || [];
-  if (!words.length) {
-    log("No words detected.");
-    return;
-  }
-
-  /* IMPORTANT: ADDRESS stays for positioning only */
   const labels = [
     "NAME",
     "PASSPORT",
     "NATIONALITY",
     "EMPLOYER",
-    "ADDRESS",       // needed for correct EXPIRY DATE position
+    "ADDRESS",      // used only for positioning
     "EXPIRY DATE"
   ];
 
   const labelBoxes = {};
 
+  /* Detect labels */
   for (const w of words) {
     const text = (w.text || "").trim().toUpperCase();
-    if (!text) continue;
-
     for (const label of labels) {
       const tokens = label.split(" ");
       let bestSim = similarity(text, label);
-      for (const t of tokens) {
-        bestSim = Math.max(bestSim, similarity(text, t));
-      }
+      for (const t of tokens) bestSim = Math.max(bestSim, similarity(text, t));
       if (bestSim >= 0.6) {
         if (!labelBoxes[label] || w.bbox.y0 < labelBoxes[label].y0) {
           labelBoxes[label] = w.bbox;
@@ -190,30 +191,26 @@ async function runSmartOCR() {
     }
   }
 
-  log("Detected labels: " + Object.keys(labelBoxes).join(", "));
-
   const ctx = captureCanvas.getContext("2d");
   ctx.lineWidth = 3;
   ctx.font = "16px Arial";
   ctx.textBaseline = "top";
 
-  function drawBox(bboxUp, color, textLabel) {
-    const x0 = bboxUp.x0 / scale;
-    const y0 = bboxUp.y0 / scale;
-    const x1 = bboxUp.x1 / scale;
-    const y1 = bboxUp.y1 / scale;
+  function drawBox(b, color, label) {
+    const x0 = b.x0 / scale;
+    const y0 = b.y0 / scale;
+    const x1 = b.x1 / scale;
+    const y1 = b.y1 / scale;
     ctx.strokeStyle = color;
     ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
-    if (textLabel) {
+    if (label) {
       ctx.fillStyle = color;
-      ctx.fillText(textLabel, x0 + 2, y0 - 18);
+      ctx.fillText(label, x0 + 2, y0 - 18);
     }
   }
 
   for (const label of labels) {
-    if (labelBoxes[label]) {
-      drawBox(labelBoxes[label], "#00bcd4", label);
-    }
+    if (labelBoxes[label]) drawBox(labelBoxes[label], "#00bcd4", label);
   }
 
   const values = {
@@ -224,132 +221,98 @@ async function runSmartOCR() {
     "EXPIRY DATE": ""
   };
 
-  function getNextLabelBelow(currentLabel) {
-    const curBox = labelBoxes[currentLabel];
-    if (!curBox) return null;
-    let bestLabel = null;
-    let bestDy = Infinity;
-    for (const l of labels) {
-      if (l === currentLabel) continue;
-      const b = labelBoxes[l];
-      if (!b) continue;
-      if (b.y0 <= curBox.y1) continue;
-      const dy = b.y0 - curBox.y1;
-      if (dy < bestDy) {
-        bestDy = dy;
-        bestLabel = l;
-      }
+  /* Extract value using font-size detection */
+  function extractValue(label) {
+    const box = labelBoxes[label];
+    if (!box) return "";
+
+    const labelHeight = box.y1 - box.y0;
+
+    const below = words.filter(
+      (w) =>
+        w.bbox.y0 > box.y1 &&
+        w.bbox.y0 < box.y1 + 400
+    );
+
+    const bigger = below.filter((w) => {
+      const h = w.bbox.y1 - w.bbox.y0;
+      return h > labelHeight * 1.2;
+    });
+
+    if (!bigger.length) return "";
+
+    const lines = groupByLines(bigger, 18);
+    const selected = lines.slice(0, label === "EMPLOYER" || label === "NAME" ? 2 : 1);
+
+    const textLines = selected.map((line) =>
+      line
+        .sort((a, b) => a.bbox.x0 - b.bbox.x0)
+        .map((w) => w.text)
+        .join(" ")
+    );
+
+    const all = selected.flat();
+    const minX = Math.min(...all.map((w) => w.bbox.x0));
+    const maxX = Math.max(...all.map((w) => w.bbox.x1));
+    const minY = Math.min(...all.map((w) => w.bbox.y0));
+    const maxY = Math.max(...all.map((w) => w.bbox.y1));
+
+    const pad = 8 * scale;
+    const x0 = Math.max(0, minX - pad);
+    const y0 = Math.max(0, minY - pad);
+    const x1 = Math.min(upCanvas.width, maxX + pad);
+    const y1 = Math.min(upCanvas.height, maxY + pad);
+
+    drawBox({ x0, y0, x1, y1 }, "#8bc34a", "VALUE");
+
+    const combined = textLines.join(" ").trim();
+
+    if (label === "EXPIRY DATE") {
+      const m = combined.match(/(\d{2}\/\d{2}\/\d{4})/);
+      return m ? m[1] : combined;
     }
-    return bestLabel;
+
+    return combined;
   }
 
   for (const label of labels) {
-    if (label === "ADDRESS") continue; // do not extract ADDRESS
-
-    const curBox = labelBoxes[label];
-    if (!curBox) continue;
-
-    const nextLabel = getNextLabelBelow(label);
-    const yStartUp = curBox.y1 + 10 * scale;
-    const yEndUp = nextLabel
-      ? labelBoxes[nextLabel].y0 - 10 * scale
-      : upCanvas.height - 10 * scale;
-
-    /* CONTROL GREEN BOX SIZE */
-    const MAX_VALUE_HEIGHT = 80 * scale; // tight box
-
-    let cropH = yEndUp - yStartUp;
-    if (cropH > MAX_VALUE_HEIGHT) cropH = MAX_VALUE_HEIGHT;
-
-    /* CONTROL WIDTH */
-    const xStartUp = upCanvas.width * 0.20;
-    const xEndUp = upCanvas.width * 0.80;
-
-    const cropW = xEndUp - xStartUp;
-
-    const cropCanvas = document.createElement("canvas");
-    cropCanvas.width = cropW;
-    cropCanvas.height = cropH;
-
-    const cropCtx = cropCanvas.getContext("2d");
-    cropCtx.drawImage(
-      upCanvas,
-      xStartUp,
-      yStartUp,
-      cropW,
-      cropH,
-      0,
-      0,
-      cropW,
-      cropH
-    );
-
-    drawBox({ x0: xStartUp, y0: yStartUp, x1: xEndUp, y1: yStartUp + cropH }, "#8bc34a", "VALUE");
-
-    const cropDataURL = cropCanvas.toDataURL("image/png");
-    const valResult = await Tesseract.recognize(cropDataURL, "eng", {
-      tessedit_char_whitelist:
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/.-,' ",
-    });
-
-    let text = (valResult.data.text || "").trim();
-    let lines = text
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
-
-    if (!lines.length) continue;
-
-    if (label === "NAME") {
-      values[label] = lines.slice(0, 2).join(" ");
-    } else if (label === "EMPLOYER") {
-      values[label] = lines.slice(0, 2).join(" ");
-    } else if (label === "EXPIRY DATE") {
-      const match = lines.join(" ").match(/(\d{2}\/\d{2}\/\d{4})/);
-      values[label] = match ? match[1] : "";
-    } else {
-      values[label] = lines[0];
-    }
+    if (label === "ADDRESS") continue;
+    values[label] = extractValue(label);
   }
 
   const extracted = {
-    name: values["NAME"] || "",
-    passport: values["PASSPORT"] || "",
-    nationality: values["NATIONALITY"] || "",
-    employer: values["EMPLOYER"] || "",
-    expiry: values["EXPIRY DATE"] || ""
+    name: values["NAME"],
+    passport: values["PASSPORT"],
+    nationality: values["NATIONALITY"],
+    employer: values["EMPLOYER"],
+    expiry: values["EXPIRY DATE"]
   };
 
   lastExtractedData = extracted;
   showFields(extracted);
-
-  const missing = Object.entries(extracted)
-    .filter(([_, v]) => !v)
-    .map(([k]) => k.toUpperCase());
-
-  if (missing.length) {
-    log("Missing fields: " + missing.join(", "));
-  } else {
-    log("All fields detected.");
-  }
 }
 
-/* Show extracted fields */
+/* ===========================
+   SHOW FIELDS
+=========================== */
+
 function showFields(data) {
   fieldsDiv.innerHTML = `
-    <div><strong>Name:</strong> ${data.name || "-"}</div>
-    <div><strong>Passport:</strong> ${data.passport || "-"}</div>
-    <div><strong>Nationality:</strong> ${data.nationality || "-"}</div>
-    <div><strong>Employer:</strong> ${data.employer || "-"}</div>
-    <div><strong>Expiry Date:</strong> ${data.expiry || "-"}</div>
+    <div><strong>Name:</strong> ${data.name}</div>
+    <div><strong>Passport:</strong> ${data.passport}</div>
+    <div><strong>Nationality:</strong> ${data.nationality}</div>
+    <div><strong>Employer:</strong> ${data.employer}</div>
+    <div><strong>Expiry Date:</strong> ${data.expiry}</div>
   `;
   confirmBtn.style.display = "block";
 }
 
-/* Save to Google Sheet */
+/* ===========================
+   SAVE TO GOOGLE SHEET
+=========================== */
+
 confirmBtn.addEventListener("click", async () => {
   if (!lastExtractedData) return;
-  log("Sending to Google Sheet...");
 
   await fetch(APPS_SCRIPT_URL, {
     method: "POST",
