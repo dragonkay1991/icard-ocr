@@ -54,20 +54,23 @@ function cropToFrame() {
   return tempCanvas;
 }
 
-/* Deskew image using OpenCV */
+/* Deskew using Hough lines (compatible with all OpenCV builds) */
 function deskewImage(mat) {
   let gray = new cv.Mat();
   cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
 
-  let thresh = new cv.Mat();
-  cv.threshold(gray, thresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+  let edges = new cv.Mat();
+  cv.Canny(gray, edges, 50, 150);
 
-  let coords = new cv.Mat();
-  cv.findNonZero(thresh, coords);
+  let lines = new cv.Mat();
+  cv.HoughLines(edges, lines, 1, Math.PI / 180, 150);
 
-  let rect = cv.minAreaRect(coords);
-  let angle = rect.angle;
-  if (angle < -45) angle += 90;
+  let angle = 0;
+  if (lines.rows > 0) {
+    let rho = lines.data32F[0];
+    let theta = lines.data32F[1];
+    angle = (theta * 180 / Math.PI) - 90;
+  }
 
   let center = new cv.Point(mat.cols / 2, mat.rows / 2);
   let M = cv.getRotationMatrix2D(center, angle, 1);
@@ -76,8 +79,8 @@ function deskewImage(mat) {
   cv.warpAffine(mat, rotated, M, new cv.Size(mat.cols, mat.rows), cv.INTER_CUBIC);
 
   gray.delete();
-  thresh.delete();
-  coords.delete();
+  edges.delete();
+  lines.delete();
   M.delete();
 
   return rotated;
@@ -141,7 +144,6 @@ setInterval(() => {
     stableCount++;
     scanFrame.style.borderColor = "lime";
 
-    // ~1 second stable (300ms * 3)
     if (stableCount >= 3) {
       autoCaptured = true;
       captureAndOCR();
@@ -158,11 +160,9 @@ async function captureAndOCR() {
   try {
     log("Auto-capturing...");
 
-    // Draw latest frame to canvas
     const ctx = canvas.getContext("2d");
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // Crop to card frame
     const tempCanvas = cropToFrame();
 
     if (!window.cv || !cv.Mat) {
@@ -172,7 +172,6 @@ async function captureAndOCR() {
       return;
     }
 
-    // OpenCV: deskew + sharpen
     let mat = cv.imread(tempCanvas);
     let rotated = deskewImage(mat);
     mat.delete();
@@ -235,7 +234,6 @@ function extractFields(text) {
     if (i < 0) return "";
     let value = "";
     for (let j = i + 1; j < lines.length; j++) {
-      // stop when next label appears
       if (["PASSPORT", "NAME", "NATIONALITY", "EXPIRY", "EMPLOYER", "DATE OF BIRTH", "REFERENCE NO", "ADDRESS", "GENDER"]
         .some(x => lines[j].includes(x))) {
         break;
