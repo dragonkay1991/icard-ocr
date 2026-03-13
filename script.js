@@ -1,273 +1,221 @@
+/* ========== DOM & GLOBALS ========== */
+
 const video = document.getElementById("video");
-const canvas = document.getElementById("canvas");
-const scanFrame = document.getElementById("scanFrame");
+const captureCanvas = document.getElementById("captureCanvas");
+const captureBtn = document.getElementById("captureBtn");
 const fieldsDiv = document.getElementById("fields");
 const confirmBtn = document.getElementById("confirmBtn");
 const logDiv = document.getElementById("log");
 
 let lastExtractedData = null;
-let stableCount = 0;
-let autoCaptured = false;
+let stream = null;
 
-// === CONFIG: your Google Apps Script Web App URL ===
-const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwq66OWAFID_aBqvMZpPp_vB1yuzOg3Fkz6ERpbhA3K-xj6JYKRPWJzstXkgxKFMo2o/exec";
+const APPS_SCRIPT_URL =
+  "https://script.google.com/macros/s/AKfycbwq66OWAFID_aBqvMZpPp_vB1yuzOg3Fkz6ERpbhA3K-xj6JYKRPWJzstXkgxKFMo2o/exec";
 
+/* ========== LOG ========== */
 function log(msg) {
   logDiv.textContent += msg + "\n";
 }
 
-/* Start back camera in HD */
-navigator.mediaDevices.getUserMedia({
-  video: {
-    facingMode: { ideal: "environment" },
-    width: { ideal: 1920 },
-    height: { ideal: 1080 }
-  }
-})
-.then(stream => {
-  video.srcObject = stream;
-  log("Back camera started.");
-})
-.catch(err => log("Camera error: " + err));
+/* ========== CAMERA ========== */
+navigator.mediaDevices
+  .getUserMedia({
+    video: { facingMode: "environment", width: 1920, height: 1080 }
+  })
+  .then((s) => {
+    stream = s;
+    video.srcObject = s;
+    video.addEventListener("loadedmetadata", () => {
+      captureCanvas.width = video.videoWidth;
+      captureCanvas.height = video.videoHeight;
+    });
+    log("Camera started.");
+  })
+  .catch((err) => log("Camera error: " + err));
 
-/* Crop only the card inside the frame */
-function cropToFrame() {
-  const frame = scanFrame.getBoundingClientRect();
-  const videoRect = video.getBoundingClientRect();
-
-  const scaleX = canvas.width / videoRect.width;
-  const scaleY = canvas.height / videoRect.height;
-
-  const x = (frame.left - videoRect.left) * scaleX;
-  const y = (frame.top - videoRect.top) * scaleY;
-  const w = frame.width * scaleX;
-  const h = frame.height * scaleY;
-
-  const ctx = canvas.getContext("2d");
-  const cropped = ctx.getImageData(x, y, w, h);
-
-  const tempCanvas = document.createElement("canvas");
-  tempCanvas.width = w;
-  tempCanvas.height = h;
-  tempCanvas.getContext("2d").putImageData(cropped, 0, 0);
-
-  return tempCanvas;
-}
-
-/* Deskew using Hough lines (compatible with all OpenCV builds) */
-function deskewImage(mat) {
-  let gray = new cv.Mat();
-  cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
-
-  let edges = new cv.Mat();
-  cv.Canny(gray, edges, 50, 150);
-
-  let lines = new cv.Mat();
-  cv.HoughLines(edges, lines, 1, Math.PI / 180, 150);
-
-  let angle = 0;
-  if (lines.rows > 0) {
-    let rho = lines.data32F[0];
-    let theta = lines.data32F[1];
-    angle = (theta * 180 / Math.PI) - 90;
-  }
-
-  let center = new cv.Point(mat.cols / 2, mat.rows / 2);
-  let M = cv.getRotationMatrix2D(center, angle, 1);
-
-  let rotated = new cv.Mat();
-  cv.warpAffine(mat, rotated, M, new cv.Size(mat.cols, mat.rows), cv.INTER_CUBIC);
-
-  gray.delete();
-  edges.delete();
-  lines.delete();
-  M.delete();
-
-  return rotated;
-}
-
-/* Sharpen image */
-function sharpen(mat) {
-  let kernel = cv.matFromArray(3, 3, cv.CV_32F, [
-    0, -1, 0,
-    -1, 5, -1,
-    0, -1, 0
-  ]);
-  let dst = new cv.Mat();
-  cv.filter2D(mat, dst, cv.CV_8U, kernel);
-  kernel.delete();
-  return dst;
-}
-
-/* Auto-detection loop (green border + auto-capture) */
-setInterval(() => {
-  if (autoCaptured) return;
-  if (!window.cv || !cv.Mat) return;
-
-  const ctx = canvas.getContext("2d");
-  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-  const frameData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  let mat = cv.matFromImageData(frameData);
-  let gray = new cv.Mat();
-  cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
-
-  let edges = new cv.Mat();
-  cv.Canny(gray, edges, 50, 150);
-
-  let contours = new cv.MatVector();
-  let hierarchy = new cv.Mat();
-  cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-  let detected = false;
-
-  for (let i = 0; i < contours.size(); i++) {
-    let cnt = contours.get(i);
-    let approx = new cv.Mat();
-    cv.approxPolyDP(cnt, approx, 0.02 * cv.arcLength(cnt, true), true);
-
-    if (approx.rows === 4) {
-      detected = true;
-      approx.delete();
-      break;
-    }
-    approx.delete();
-  }
-
-  mat.delete();
-  gray.delete();
-  edges.delete();
-  contours.delete();
-  hierarchy.delete();
-
-  if (detected) {
-    stableCount++;
-    scanFrame.style.borderColor = "lime";
-
-    if (stableCount >= 3) {
-      autoCaptured = true;
-      captureAndOCR();
-    }
-  } else {
-    stableCount = 0;
-    scanFrame.style.borderColor = "red";
-  }
-
-}, 300);
-
-/* Capture + OCR pipeline */
-async function captureAndOCR() {
+/* Tap-to-focus */
+document.getElementById("cameraContainer")?.addEventListener("click", async () => {
+  if (!stream) return;
+  const track = stream.getVideoTracks()[0];
+  const caps = track.getCapabilities?.() || {};
+  if (!caps.focusMode) return;
   try {
-    log("Auto-capturing...");
+    await track.applyConstraints({ advanced: [{ focusMode: "single-shot" }] });
+    setTimeout(() => {
+      track.applyConstraints({ advanced: [{ focusMode: "continuous" }] }).catch(() => {});
+    }, 800);
+  } catch (e) {}
+});
 
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+/* ========== CAPTURE ========== */
+captureBtn.addEventListener("click", async () => {
+  const ctx = captureCanvas.getContext("2d");
+  captureCanvas.width = video.videoWidth;
+  captureCanvas.height = video.videoHeight;
+  ctx.drawImage(video, 0, 0);
 
-    const tempCanvas = cropToFrame();
-
-    if (!window.cv || !cv.Mat) {
-      log("OpenCV not ready, using raw crop for OCR.");
-      const dataURL = tempCanvas.toDataURL("image/png");
-      await runOCR(dataURL);
-      return;
-    }
-
-    let mat = cv.imread(tempCanvas);
-    let rotated = deskewImage(mat);
-    mat.delete();
-
-    let sharpened = sharpen(rotated);
-    rotated.delete();
-
-    cv.imshow(tempCanvas, sharpened);
-    sharpened.delete();
-
-    const dataURL = tempCanvas.toDataURL("image/png");
-    await runOCR(dataURL);
-  } catch (e) {
-    log("Capture/OCR error: " + e);
-    autoCaptured = false;
-    stableCount = 0;
-    scanFrame.style.borderColor = "red";
+  if (stream) {
+    stream.getTracks().forEach((t) => t.stop());
+    stream = null;
   }
-}
 
-/* Run Tesseract OCR with whitelist */
-async function runOCR(dataURL) {
+  video.style.display = "none";
+  captureCanvas.style.display = "block";
+
+  await runOCR();
+});
+
+/* ========== OCR ENGINE ========== */
+async function runOCR() {
   log("Running OCR...");
 
-  const result = await Tesseract.recognize(
-    dataURL,
-    "eng",
-    {
-      tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/.-' ",
-      logger: m => log(m.status + " " + (m.progress ? (m.progress * 100).toFixed(0) + "%" : ""))
-    }
-  );
+  const dataURL = captureCanvas.toDataURL("image/png");
 
-  const text = result.data.text;
-  log("OCR done.\n" + text);
+  const result = await Tesseract.recognize(dataURL, "eng", {
+    tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/.-,' ",
+    logger: (m) => log(m.status)
+  });
 
-  const extracted = extractFields(text);
+  const rawText = (result.data.text || "").replace(/\r/g, "");
+  const linesRaw = rawText
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+
+  const lines = linesRaw.map((l) => l.toUpperCase());
+
+  log("OCR complete.");
+
+  const extracted = extractFields(lines, linesRaw);
   lastExtractedData = extracted;
   showFields(extracted);
 }
 
-/* Extract fields using label-below logic + multi-line employer */
-function extractFields(text) {
-  const lines = text
-    .replace(/\r/g, "")
-    .split("\n")
-    .map(l => l.trim().toUpperCase())
-    .filter(l => l.length > 0);
+/* ========== SMART TEXT PARSING ========== */
+function extractFields(lines, linesRaw) {
+  const out = {
+    name: "",
+    passport: "",
+    nationality: "",
+    employer: "",
+    expiry: ""
+  };
 
-  function getBelow(label) {
-    const i = lines.findIndex(l => l.includes(label));
-    if (i >= 0 && i + 1 < lines.length) {
-      return lines[i + 1].trim();
+  const labelMap = {
+    NAME: ["NAME"],
+    PASSPORT: ["PASSPORT", "PASSPORT NO", "PASSPORT NO."],
+    NATIONALITY: ["NATIONALITY"],
+    EMPLOYER: ["EMPLOYER", "COMPANY", "EMPLOYER NAME"],
+    EXPIRY: ["EXPIRY DATE", "EXPIRY", "DATE OF EXPIRY"]
+  };
+
+  function similarity(a, b) {
+    a = a.toUpperCase();
+    b = b.toUpperCase();
+    const m = a.length, n = b.length;
+    const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+    for (let i = 0; i <= m; i++) dp[i][0] = i;
+    for (let j = 0; j <= n; j++) dp[0][j] = j;
+    for (let i = 1; i <= m; i++) {
+      for (let j = 1; j <= n; j++) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        dp[i][j] = Math.min(
+          dp[i - 1][j] + 1,
+          dp[i][j - 1] + 1,
+          dp[i - 1][j - 1] + cost
+        );
+      }
     }
-    return "";
+    const dist = dp[m][n];
+    return 1 - dist / Math.max(m, n);
   }
 
-  function getBelowMulti(label) {
-    const i = lines.findIndex(l => l.includes(label));
-    if (i < 0) return "";
-    let value = "";
-    for (let j = i + 1; j < lines.length; j++) {
-      if (["PASSPORT", "NAME", "NATIONALITY", "EXPIRY", "EMPLOYER", "DATE OF BIRTH", "REFERENCE NO", "ADDRESS", "GENDER"]
-        .some(x => lines[j].includes(x))) {
+  function findLabelIndex(key) {
+    const candidates = labelMap[key];
+    let bestIdx = -1;
+    let bestScore = 0;
+    lines.forEach((line, idx) => {
+      candidates.forEach((cand) => {
+        const score = similarity(line, cand);
+        if (score > bestScore && score >= 0.5) {
+          bestScore = score;
+          bestIdx = idx;
+        }
+      });
+    });
+    return bestIdx;
+  }
+
+  function collectNextLines(startIdx, maxLines = 1) {
+    const collected = [];
+    for (let i = startIdx + 1; i < lines.length && collected.length < maxLines; i++) {
+      const upper = lines[i];
+      if (
+        upper.includes("DATE OF BIRTH") ||
+        upper.includes("DOB") ||
+        upper.includes("MRZ") ||
+        upper.includes("ADDRESS")
+      ) {
+        continue;
+      }
+      collected.push(linesRaw[i]);
+    }
+    return collected.join(" ").trim();
+  }
+
+  // NAME (1–2 lines)
+  const idxName = findLabelIndex("NAME");
+  if (idxName !== -1) out.name = collectNextLines(idxName, 2);
+
+  // PASSPORT
+  const idxPass = findLabelIndex("PASSPORT");
+  if (idxPass !== -1) {
+    let val = collectNextLines(idxPass, 1);
+    const m = val.match(/[A-Z0-9]{6,}/);
+    out.passport = m ? m[0] : val;
+  }
+
+  // NATIONALITY
+  const idxNat = findLabelIndex("NATIONALITY");
+  if (idxNat !== -1) out.nationality = collectNextLines(idxNat, 1);
+
+  // EMPLOYER (1–2 lines)
+  const idxEmp = findLabelIndex("EMPLOYER");
+  if (idxEmp !== -1) out.employer = collectNextLines(idxEmp, 2);
+
+  // EXPIRY DATE
+  const idxExp = findLabelIndex("EXPIRY");
+  if (idxExp !== -1) {
+    for (let i = idxExp; i < lines.length && i <= idxExp + 4; i++) {
+      const m =
+        linesRaw[i].match(/(\d{2}\/\d{2}\/\d{4})/) ||
+        linesRaw[i].match(/(\d{2}-\d{2}-\d{4})/);
+      if (m) {
+        out.expiry = m[1];
         break;
       }
-      value += lines[j] + " ";
     }
-    return value.trim();
   }
 
-  return {
-    passport: getBelow("PASSPORT"),
-    name: getBelow("NAME"),
-    nationality: getBelow("NATIONALITY"),
-    expiry: getBelow("EXPIRY"),
-    employer: getBelowMulti("EMPLOYER")
-  };
+  return out;
 }
 
-/* Show extracted fields + enable confirm */
+/* ========== SHOW FIELDS ========== */
 function showFields(data) {
   fieldsDiv.innerHTML = `
     <div><strong>Name:</strong> ${data.name || "-"}</div>
     <div><strong>Passport:</strong> ${data.passport || "-"}</div>
     <div><strong>Nationality:</strong> ${data.nationality || "-"}</div>
-    <div><strong>Expiry Date:</strong> ${data.expiry || "-"}</div>
     <div><strong>Employer:</strong> ${data.employer || "-"}</div>
+    <div><strong>Expiry Date:</strong> ${data.expiry || "-"}</div>
   `;
   confirmBtn.style.display = "block";
 }
 
-/* Confirm & Save to Google Sheet */
+/* ========== SAVE TO GOOGLE SHEET ========== */
 confirmBtn.addEventListener("click", async () => {
   if (!lastExtractedData) return;
-  log("Sending to Google Sheet...");
 
   await fetch(APPS_SCRIPT_URL, {
     method: "POST",
