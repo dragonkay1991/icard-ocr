@@ -36,12 +36,11 @@ navigator.mediaDevices
   })
   .catch((err) => log("Camera error: " + err));
 
-/* Simple Levenshtein distance for fuzzy matching */
+/* Levenshtein for fuzzy matching */
 function levenshtein(a, b) {
   a = a.toUpperCase();
   b = b.toUpperCase();
-  const m = a.length;
-  const n = b.length;
+  const m = a.length, n = b.length;
   const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
   for (let i = 0; i <= m; i++) dp[i][0] = i;
   for (let j = 0; j <= n; j++) dp[0][j] = j;
@@ -79,11 +78,11 @@ captureBtn.addEventListener("click", async () => {
     captureCanvas.height = video.videoHeight;
     ctx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
 
-    // Freeze: hide video, show canvas
+    // Hide video, show captured image
     video.style.display = "none";
     captureCanvas.style.display = "block";
 
-    // Optionally stop camera stream
+    // Stop camera stream so the image stays frozen
     if (stream) {
       stream.getTracks().forEach((t) => t.stop());
       stream = null;
@@ -98,7 +97,7 @@ captureBtn.addEventListener("click", async () => {
 
 /* Run OCR with fuzzy label detection + C3 cropping */
 async function runSmartOCR() {
-  log("Running OCR for labels...");
+  log("Running OCR...");
 
   const imgW = captureCanvas.width;
   const imgH = captureCanvas.height;
@@ -124,7 +123,7 @@ async function runSmartOCR() {
       ),
   });
 
-  log("Label OCR done.");
+  log("OCR done.");
 
   const words = result.data.words || [];
   if (!words.length) {
@@ -141,34 +140,24 @@ async function runSmartOCR() {
     "EXPIRY DATE",
   ];
 
-  const labelBoxes = {}; // label -> bbox in upscaled coords
+  const labelBoxes = {};
 
-  // Fuzzy detect labels from words
+  // Fuzzy detect labels
   for (const w of words) {
     const text = (w.text || "").trim().toUpperCase();
     if (!text) continue;
 
     for (const label of labels) {
       const tokens = label.split(" ");
-      let bestSim = 0;
+      let bestSim = similarity(text, label);
 
-      // Compare to full label
-      bestSim = Math.max(bestSim, similarity(text, label));
-
-      // Compare to each token (for "EXPIRY DATE")
       for (const t of tokens) {
         bestSim = Math.max(bestSim, similarity(text, t));
       }
 
       if (bestSim >= 0.6) {
-        // Accept as this label
-        if (!labelBoxes[label]) {
+        if (!labelBoxes[label] || w.bbox.y0 < labelBoxes[label].y0) {
           labelBoxes[label] = w.bbox;
-        } else {
-          // Keep the one higher on the card (smaller y0)
-          if (w.bbox.y0 < labelBoxes[label].y0) {
-            labelBoxes[label] = w.bbox;
-          }
         }
       }
     }
@@ -176,7 +165,6 @@ async function runSmartOCR() {
 
   log("Detected labels: " + Object.keys(labelBoxes).join(", "));
 
-  // Draw rectangles for labels + value regions on original canvas
   const ctx = captureCanvas.getContext("2d");
   ctx.lineWidth = 3;
   ctx.font = "16px Arial";
@@ -202,7 +190,7 @@ async function runSmartOCR() {
     }
   }
 
-  // C3: crop between labels, OCR each region for values
+  // C3 cropping
   const values = {
     NAME: "",
     PASSPORT: "",
@@ -212,7 +200,6 @@ async function runSmartOCR() {
     "EXPIRY DATE": "",
   };
 
-  // Helper: get next label below current
   function getNextLabelBelow(currentLabel) {
     const curBox = labelBoxes[currentLabel];
     if (!curBox) return null;
@@ -222,7 +209,7 @@ async function runSmartOCR() {
       if (l === currentLabel) continue;
       const b = labelBoxes[l];
       if (!b) continue;
-      if (b.y0 <= curBox.y1) continue; // must be below
+      if (b.y0 <= curBox.y1) continue;
       const dy = b.y0 - curBox.y1;
       if (dy < bestDy) {
         bestDy = dy;
@@ -232,20 +219,18 @@ async function runSmartOCR() {
     return bestLabel;
   }
 
-  // For each label, crop region between it and next label
   for (const label of labels) {
     const curBox = labelBoxes[label];
     if (!curBox) continue;
 
     const nextLabel = getNextLabelBelow(label);
-    const yStartUp = curBox.y1 + 5 * scale;
+    const yStartUp = curBox.y1 + 10 * scale;
     const yEndUp = nextLabel
-      ? labelBoxes[nextLabel].y0 - 5 * scale
-      : upCanvas.height - 5 * scale;
+      ? labelBoxes[nextLabel].y0 - 10 * scale
+      : upCanvas.height - 10 * scale;
 
     if (yEndUp <= yStartUp) continue;
 
-    // Horizontal crop: central 80% of width
     const xStartUp = upCanvas.width * 0.1;
     const xEndUp = upCanvas.width * 0.9;
 
@@ -268,17 +253,8 @@ async function runSmartOCR() {
       cropH
     );
 
-    // Draw value region box on main canvas
-    const valueBoxUp = {
-      x0: xStartUp,
-      y0: yStartUp,
-      x1: xEndUp,
-      y1: yEndUp,
-    };
-    drawBox(valueBoxUp, "#8bc34a", "VALUE");
+    drawBox({ x0: xStartUp, y0: yStartUp, x1: xEndUp, y1: yEndUp }, "#8bc34a", "VALUE");
 
-    // OCR this cropped region
-    log("OCR value for " + label + "...");
     const cropDataURL = cropCanvas.toDataURL("image/png");
     const valResult = await Tesseract.recognize(cropDataURL, "eng", {
       tessedit_char_whitelist:
@@ -286,9 +262,6 @@ async function runSmartOCR() {
     });
 
     let text = (valResult.data.text || "").trim();
-    if (!text) continue;
-
-    // Clean lines
     let lines = text
       .split("\n")
       .map((l) => l.trim())
@@ -297,17 +270,10 @@ async function runSmartOCR() {
     if (!lines.length) continue;
 
     if (label === "EMPLOYER") {
-      // Only employer name, usually 1–2 lines
-      const employerLines = lines.slice(0, 2);
-      values[label] = employerLines.join(" ");
+      values[label] = lines.slice(0, 2).join(" ");
     } else if (label === "ADDRESS") {
-      // Full address
       values[label] = lines.join(", ");
-    } else if (label === "EXPIRY DATE") {
-      // Usually one line
-      values[label] = lines[0];
     } else {
-      // NAME, PASSPORT, NATIONALITY
       values[label] = lines[0];
     }
   }
@@ -324,16 +290,12 @@ async function runSmartOCR() {
   lastExtractedData = extracted;
   showFields(extracted);
 
-  const missing = [];
-  if (!extracted.name) missing.push("NAME");
-  if (!extracted.passport) missing.push("PASSPORT");
-  if (!extracted.nationality) missing.push("NATIONALITY");
-  if (!extracted.employer) missing.push("EMPLOYER");
-  if (!extracted.address) missing.push("ADDRESS");
-  if (!extracted.expiry) missing.push("EXPIRY DATE");
+  const missing = Object.entries(extracted)
+    .filter(([k, v]) => !v)
+    .map(([k]) => k.toUpperCase());
 
   if (missing.length) {
-    log("Missing or weak fields: " + missing.join(", "));
+    log("Missing fields: " + missing.join(", "));
   } else {
     log("All fields detected.");
   }
