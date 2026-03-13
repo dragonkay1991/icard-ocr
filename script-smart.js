@@ -16,14 +16,16 @@ function log(msg) {
   logDiv.textContent += msg + "\n";
 }
 
-/* Start back camera */
+/* Start back camera with autofocus */
 navigator.mediaDevices
   .getUserMedia({
     video: {
       facingMode: { ideal: "environment" },
       width: { ideal: 1920 },
       height: { ideal: 1080 },
-    },
+      focusMode: "continuous",
+      advanced: [{ focusMode: "continuous" }]
+    }
   })
   .then((s) => {
     stream = s;
@@ -35,6 +37,35 @@ navigator.mediaDevices
     log("Back camera started.");
   })
   .catch((err) => log("Camera error: " + err));
+
+/* Tap-to-focus */
+async function tapToFocus() {
+  if (!stream) return;
+
+  const track = stream.getVideoTracks()[0];
+  const capabilities = track.getCapabilities();
+
+  if (capabilities.focusMode) {
+    try {
+      await track.applyConstraints({
+        advanced: [{ focusMode: "single-shot" }]
+      });
+      log("Tap-to-focus triggered.");
+
+      setTimeout(async () => {
+        await track.applyConstraints({
+          advanced: [{ focusMode: "continuous" }]
+        });
+        log("Continuous focus restored.");
+      }, 800);
+
+    } catch (err) {
+      log("Tap-to-focus not supported.");
+    }
+  }
+}
+
+document.getElementById("cameraContainer").addEventListener("click", tapToFocus);
 
 /* Levenshtein for fuzzy matching */
 function levenshtein(a, b) {
@@ -68,39 +99,27 @@ function similarity(a, b) {
 captureBtn.addEventListener("click", async () => {
   try {
     const canvas = captureCanvas;
-    if (!canvas) {
-      log("ERROR: captureCanvas not found in HTML.");
-      return;
-    }
-
     const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      log("ERROR: captureCanvas.getContext('2d') failed.");
-      return;
-    }
 
     if (!video.videoWidth || !video.videoHeight) {
       log("Video not ready.");
       return;
     }
 
-    // Draw current frame to canvas
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // Hide video, show captured image
     video.style.display = "none";
     canvas.style.display = "block";
 
-    // Stop camera stream so the image stays frozen
     if (stream) {
       stream.getTracks().forEach((t) => t.stop());
       stream = null;
     }
 
-    // Run smart OCR
     await runSmartOCR();
+
   } catch (e) {
     log("Capture error: " + e);
   }
@@ -146,13 +165,11 @@ async function runSmartOCR() {
     "PASSPORT",
     "NATIONALITY",
     "EMPLOYER",
-    "ADDRESS",
-    "EXPIRY DATE",
+    "EXPIRY DATE"
   ];
 
   const labelBoxes = {};
 
-  // Fuzzy detect labels
   for (const w of words) {
     const text = (w.text || "").trim().toUpperCase();
     if (!text) continue;
@@ -191,7 +208,6 @@ async function runSmartOCR() {
     }
   }
 
-  // Draw label boxes
   for (const label of labels) {
     if (labelBoxes[label]) {
       drawBox(labelBoxes[label], "#00bcd4", label);
@@ -203,8 +219,7 @@ async function runSmartOCR() {
     PASSPORT: "",
     NATIONALITY: "",
     EMPLOYER: "",
-    ADDRESS: "",
-    "EXPIRY DATE": "",
+    "EXPIRY DATE": ""
   };
 
   function getNextLabelBelow(currentLabel) {
@@ -278,8 +293,8 @@ async function runSmartOCR() {
 
     if (label === "EMPLOYER") {
       values[label] = lines.slice(0, 2).join(" ");
-    } else if (label === "ADDRESS") {
-      values[label] = lines.join(", ");
+    } else if (label === "NAME") {
+      values[label] = lines.slice(0, 2).join(" ");
     } else {
       values[label] = lines[0];
     }
@@ -290,8 +305,7 @@ async function runSmartOCR() {
     passport: values["PASSPORT"] || "",
     nationality: values["NATIONALITY"] || "",
     employer: values["EMPLOYER"] || "",
-    address: values["ADDRESS"] || "",
-    expiry: values["EXPIRY DATE"] || "",
+    expiry: values["EXPIRY DATE"] || ""
   };
 
   lastExtractedData = extracted;
@@ -315,7 +329,6 @@ function showFields(data) {
     <div><strong>Passport:</strong> ${data.passport || "-"}</div>
     <div><strong>Nationality:</strong> ${data.nationality || "-"}</div>
     <div><strong>Employer:</strong> ${data.employer || "-"}</div>
-    <div><strong>Address:</strong> ${data.address || "-"}</div>
     <div><strong>Expiry Date:</strong> ${data.expiry || "-"}</div>
   `;
   confirmBtn.style.display = "block";
