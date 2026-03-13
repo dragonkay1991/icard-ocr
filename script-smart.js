@@ -1,5 +1,4 @@
 const video = document.getElementById("video");
-const overlay = document.getElementById("overlay");
 const captureCanvas = document.getElementById("captureCanvas");
 const captureBtn = document.getElementById("captureBtn");
 const fieldsDiv = document.getElementById("fields");
@@ -7,6 +6,7 @@ const confirmBtn = document.getElementById("confirmBtn");
 const logDiv = document.getElementById("log");
 
 let lastExtractedData = null;
+let stream = null;
 
 // Your Apps Script URL
 const APPS_SCRIPT_URL =
@@ -25,12 +25,10 @@ navigator.mediaDevices
       height: { ideal: 1080 },
     },
   })
-  .then((stream) => {
+  .then((s) => {
+    stream = s;
     video.srcObject = stream;
     video.addEventListener("loadedmetadata", () => {
-      // Match overlay & capture canvas to video size
-      overlay.width = video.videoWidth;
-      overlay.height = video.videoHeight;
       captureCanvas.width = video.videoWidth;
       captureCanvas.height = video.videoHeight;
     });
@@ -38,27 +36,86 @@ navigator.mediaDevices
   })
   .catch((err) => log("Camera error: " + err));
 
+/* Simple Levenshtein distance for fuzzy matching */
+function levenshtein(a, b) {
+  a = a.toUpperCase();
+  b = b.toUpperCase();
+  const m = a.length;
+  const n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost
+      );
+    }
+  }
+  return dp[m][n];
+}
+
+function similarity(a, b) {
+  if (!a || !b) return 0;
+  const dist = levenshtein(a, b);
+  const maxLen = Math.max(a.length, b.length);
+  return maxLen === 0 ? 1 : 1 - dist / maxLen;
+}
+
 /* Capture & Scan */
 captureBtn.addEventListener("click", async () => {
   try {
-    log("Capturing frame...");
+    if (!video.videoWidth || !video.videoHeight) {
+      log("Video not ready.");
+      return;
+    }
+
+    // Draw current frame to canvas
     const ctx = captureCanvas.getContext("2d");
+    captureCanvas.width = video.videoWidth;
+    captureCanvas.height = video.videoHeight;
     ctx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
 
-    const dataURL = captureCanvas.toDataURL("image/png");
-    await runOCRWithLayout(dataURL);
+    // Freeze: hide video, show canvas
+    video.style.display = "none";
+    captureCanvas.style.display = "block";
+
+    // Optionally stop camera stream
+    if (stream) {
+      stream.getTracks().forEach((t) => t.stop());
+      stream = null;
+    }
+
+    // Run smart OCR
+    await runSmartOCR();
   } catch (e) {
     log("Capture error: " + e);
   }
 });
 
-/* Run OCR with layout and draw rectangles */
-async function runOCRWithLayout(dataURL) {
-  log("Running OCR...");
+/* Run OCR with fuzzy label detection + C3 cropping */
+async function runSmartOCR() {
+  log("Running OCR for labels...");
+
+  const imgW = captureCanvas.width;
+  const imgH = captureCanvas.height;
+
+  // Upscale for better small-label detection
+  const scale = 2;
+  const upCanvas = document.createElement("canvas");
+  upCanvas.width = imgW * scale;
+  upCanvas.height = imgH * scale;
+  const upCtx = upCanvas.getContext("2d");
+  upCtx.drawImage(captureCanvas, 0, 0, upCanvas.width, upCanvas.height);
+
+  const dataURL = upCanvas.toDataURL("image/png");
 
   const result = await Tesseract.recognize(dataURL, "eng", {
     tessedit_char_whitelist:
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/.-' ",
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/.-,' ",
     logger: (m) =>
       log(
         m.status +
@@ -67,115 +124,218 @@ async function runOCRWithLayout(dataURL) {
       ),
   });
 
-  log("OCR done.");
+  log("Label OCR done.");
 
-  const { blocks } = result.data;
-  if (!blocks || blocks.length === 0) {
-    log("No text blocks detected.");
+  const words = result.data.words || [];
+  if (!words.length) {
+    log("No words detected.");
     return;
   }
 
-  // Normalize text and keep bbox
-  const normBlocks = blocks.map((b) => ({
-    text: (b.text || "").trim().toUpperCase(),
-    bbox: b.bbox, // { x0, y0, x1, y1 }
-  })).filter(b => b.text.length > 0);
+  const labels = [
+    "NAME",
+    "PASSPORT",
+    "NATIONALITY",
+    "EMPLOYER",
+    "ADDRESS",
+    "EXPIRY DATE",
+  ];
 
-  // Required labels
-  const labels = ["NAME", "PASSPORT", "NATIONALITY", "EXPIRY DATE", "EMPLOYER"];
+  const labelBoxes = {}; // label -> bbox in upscaled coords
 
-  const labelMap = {};
-  const valueMap = {};
+  // Fuzzy detect labels from words
+  for (const w of words) {
+    const text = (w.text || "").trim().toUpperCase();
+    if (!text) continue;
 
-  // Find label blocks
-  for (const label of labels) {
-    const lb = normBlocks.find(b => b.text.includes(label));
-    if (lb) labelMap[label] = lb;
-  }
+    for (const label of labels) {
+      const tokens = label.split(" ");
+      let bestSim = 0;
 
-  // For each label, find nearest block below it
-  for (const label of labels) {
-    const lb = labelMap[label];
-    if (!lb) continue;
+      // Compare to full label
+      bestSim = Math.max(bestSim, similarity(text, label));
 
-    const ly1 = lb.bbox.y1;
-    const lx0 = lb.bbox.x0;
-    const lx1 = lb.bbox.x1;
+      // Compare to each token (for "EXPIRY DATE")
+      for (const t of tokens) {
+        bestSim = Math.max(bestSim, similarity(text, t));
+      }
 
-    let best = null;
-    let bestDy = Infinity;
-
-    for (const b of normBlocks) {
-      if (b === lb) continue;
-      const { x0, x1, y0 } = b.bbox;
-      if (y0 <= ly1) continue; // must be below
-      const overlap = Math.min(lx1, x1) - Math.max(lx0, x0);
-      if (overlap <= 0) continue; // no horizontal overlap
-
-      const dy = y0 - ly1;
-      if (dy < bestDy) {
-        bestDy = dy;
-        best = b;
+      if (bestSim >= 0.6) {
+        // Accept as this label
+        if (!labelBoxes[label]) {
+          labelBoxes[label] = w.bbox;
+        } else {
+          // Keep the one higher on the card (smaller y0)
+          if (w.bbox.y0 < labelBoxes[label].y0) {
+            labelBoxes[label] = w.bbox;
+          }
+        }
       }
     }
-
-    if (best) valueMap[label] = best;
   }
 
-  // Draw rectangles
-  drawRectangles(labelMap, valueMap);
+  log("Detected labels: " + Object.keys(labelBoxes).join(", "));
 
-  // Extract values
+  // Draw rectangles for labels + value regions on original canvas
+  const ctx = captureCanvas.getContext("2d");
+  ctx.lineWidth = 3;
+  ctx.font = "16px Arial";
+  ctx.textBaseline = "top";
+
+  function drawBox(bboxUp, color, textLabel) {
+    const x0 = bboxUp.x0 / scale;
+    const y0 = bboxUp.y0 / scale;
+    const x1 = bboxUp.x1 / scale;
+    const y1 = bboxUp.y1 / scale;
+    ctx.strokeStyle = color;
+    ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    if (textLabel) {
+      ctx.fillStyle = color;
+      ctx.fillText(textLabel, x0 + 2, y0 - 18);
+    }
+  }
+
+  // Draw label boxes
+  for (const label of labels) {
+    if (labelBoxes[label]) {
+      drawBox(labelBoxes[label], "#00bcd4", label);
+    }
+  }
+
+  // C3: crop between labels, OCR each region for values
+  const values = {
+    NAME: "",
+    PASSPORT: "",
+    NATIONALITY: "",
+    EMPLOYER: "",
+    ADDRESS: "",
+    "EXPIRY DATE": "",
+  };
+
+  // Helper: get next label below current
+  function getNextLabelBelow(currentLabel) {
+    const curBox = labelBoxes[currentLabel];
+    if (!curBox) return null;
+    let bestLabel = null;
+    let bestDy = Infinity;
+    for (const l of labels) {
+      if (l === currentLabel) continue;
+      const b = labelBoxes[l];
+      if (!b) continue;
+      if (b.y0 <= curBox.y1) continue; // must be below
+      const dy = b.y0 - curBox.y1;
+      if (dy < bestDy) {
+        bestDy = dy;
+        bestLabel = l;
+      }
+    }
+    return bestLabel;
+  }
+
+  // For each label, crop region between it and next label
+  for (const label of labels) {
+    const curBox = labelBoxes[label];
+    if (!curBox) continue;
+
+    const nextLabel = getNextLabelBelow(label);
+    const yStartUp = curBox.y1 + 5 * scale;
+    const yEndUp = nextLabel
+      ? labelBoxes[nextLabel].y0 - 5 * scale
+      : upCanvas.height - 5 * scale;
+
+    if (yEndUp <= yStartUp) continue;
+
+    // Horizontal crop: central 80% of width
+    const xStartUp = upCanvas.width * 0.1;
+    const xEndUp = upCanvas.width * 0.9;
+
+    const cropW = xEndUp - xStartUp;
+    const cropH = yEndUp - yStartUp;
+
+    const cropCanvas = document.createElement("canvas");
+    cropCanvas.width = cropW;
+    cropCanvas.height = cropH;
+    const cropCtx = cropCanvas.getContext("2d");
+    cropCtx.drawImage(
+      upCanvas,
+      xStartUp,
+      yStartUp,
+      cropW,
+      cropH,
+      0,
+      0,
+      cropW,
+      cropH
+    );
+
+    // Draw value region box on main canvas
+    const valueBoxUp = {
+      x0: xStartUp,
+      y0: yStartUp,
+      x1: xEndUp,
+      y1: yEndUp,
+    };
+    drawBox(valueBoxUp, "#8bc34a", "VALUE");
+
+    // OCR this cropped region
+    log("OCR value for " + label + "...");
+    const cropDataURL = cropCanvas.toDataURL("image/png");
+    const valResult = await Tesseract.recognize(cropDataURL, "eng", {
+      tessedit_char_whitelist:
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/.-,' ",
+    });
+
+    let text = (valResult.data.text || "").trim();
+    if (!text) continue;
+
+    // Clean lines
+    let lines = text
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+
+    if (!lines.length) continue;
+
+    if (label === "EMPLOYER") {
+      // Only employer name, usually 1–2 lines
+      const employerLines = lines.slice(0, 2);
+      values[label] = employerLines.join(" ");
+    } else if (label === "ADDRESS") {
+      // Full address
+      values[label] = lines.join(", ");
+    } else if (label === "EXPIRY DATE") {
+      // Usually one line
+      values[label] = lines[0];
+    } else {
+      // NAME, PASSPORT, NATIONALITY
+      values[label] = lines[0];
+    }
+  }
+
   const extracted = {
-    name: valueMap["NAME"] ? valueMap["NAME"].text : "",
-    passport: valueMap["PASSPORT"] ? valueMap["PASSPORT"].text : "",
-    nationality: valueMap["NATIONALITY"] ? valueMap["NATIONALITY"].text : "",
-    expiry: valueMap["EXPIRY DATE"] ? valueMap["EXPIRY DATE"].text : "",
-    employer: valueMap["EMPLOYER"] ? valueMap["EMPLOYER"].text : "",
+    name: values["NAME"] || "",
+    passport: values["PASSPORT"] || "",
+    nationality: values["NATIONALITY"] || "",
+    employer: values["EMPLOYER"] || "",
+    address: values["ADDRESS"] || "",
+    expiry: values["EXPIRY DATE"] || "",
   };
 
   lastExtractedData = extracted;
   showFields(extracted);
 
-  // Basic check
   const missing = [];
   if (!extracted.name) missing.push("NAME");
   if (!extracted.passport) missing.push("PASSPORT");
   if (!extracted.nationality) missing.push("NATIONALITY");
-  if (!extracted.expiry) missing.push("EXPIRY DATE");
   if (!extracted.employer) missing.push("EMPLOYER");
+  if (!extracted.address) missing.push("ADDRESS");
+  if (!extracted.expiry) missing.push("EXPIRY DATE");
 
-  if (missing.length > 0) {
-    log("Missing labels/values: " + missing.join(", "));
-  }
-}
-
-/* Draw rectangles around labels and values */
-function drawRectangles(labelMap, valueMap) {
-  const ctx = overlay.getContext("2d");
-  ctx.clearRect(0, 0, overlay.width, overlay.height);
-
-  ctx.lineWidth = 3;
-  ctx.font = "16px Arial";
-  ctx.textBaseline = "top";
-
-  // Helper to draw one box
-  function drawBox(bbox, color, label) {
-    const { x0, y0, x1, y1 } = bbox;
-    ctx.strokeStyle = color;
-    ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
-    if (label) {
-      ctx.fillStyle = color;
-      ctx.fillText(label, x0 + 2, y0 - 18);
-    }
-  }
-
-  // Labels in cyan, values in lime
-  for (const key in labelMap) {
-    drawBox(labelMap[key].bbox, "#00bcd4", key);
-  }
-  for (const key in valueMap) {
-    drawBox(valueMap[key].bbox, "#8bc34a", "VALUE");
+  if (missing.length) {
+    log("Missing or weak fields: " + missing.join(", "));
+  } else {
+    log("All fields detected.");
   }
 }
 
@@ -185,8 +345,9 @@ function showFields(data) {
     <div><strong>Name:</strong> ${data.name || "-"}</div>
     <div><strong>Passport:</strong> ${data.passport || "-"}</div>
     <div><strong>Nationality:</strong> ${data.nationality || "-"}</div>
-    <div><strong>Expiry Date:</strong> ${data.expiry || "-"}</div>
     <div><strong>Employer:</strong> ${data.employer || "-"}</div>
+    <div><strong>Address:</strong> ${data.address || "-"}</div>
+    <div><strong>Expiry Date:</strong> ${data.expiry || "-"}</div>
   `;
   confirmBtn.style.display = "block";
 }
