@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="UTF-8" />
-  <title>i-Kad OCR Scanner</title>
+  <title>i-Kad OCR Scanner (Smart)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <style>
@@ -30,19 +30,28 @@
       background: #000;
     }
 
-    /* Perfect ID-card style frame */
+    /* ID-card style frame */
     #scanFrame {
       position: absolute;
       top: 50%;
       left: 50%;
       width: 90%;
-      aspect-ratio: 1.586; /* ID card ratio */
+      aspect-ratio: 1.586;
       transform: translate(-50%, -50%);
-      border: 4px solid red;
+      border: 3px solid #00bcd4;
       border-radius: 12px;
       pointer-events: none;
       box-shadow: 0 0 20px rgba(0,0,0,0.3);
-      transition: border-color 0.2s ease;
+    }
+
+    /* Overlay for rectangles */
+    #overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
     }
 
     #resultBox {
@@ -86,21 +95,21 @@
 
   <!-- Tesseract.js -->
   <script src="https://unpkg.com/tesseract.js@4.0.2/dist/tesseract.min.js"></script>
-
-  <!-- OpenCV.js -->
-  <script async src="https://docs.opencv.org/4.x/opencv.js"></script>
 </head>
 
 <body>
-  <h2>i-Kad OCR Scanner</h2>
+  <h2>i-Kad OCR Scanner (Smart)</h2>
 
   <div id="cameraContainer">
     <video id="video" autoplay playsinline></video>
     <div id="scanFrame"></div>
+    <canvas id="overlay"></canvas>
   </div>
 
-  <!-- Full-res canvas for processing -->
-  <canvas id="canvas" width="1920" height="1080" style="display:none;"></canvas>
+  <!-- Hidden canvas for capture -->
+  <canvas id="captureCanvas" style="display:none;"></canvas>
+
+  <button id="captureBtn">Capture &amp; Scan</button>
 
   <div id="resultBox">
     <strong>Extracted Data</strong>
@@ -110,6 +119,6 @@
 
   <div id="log"></div>
 
-  <script src="script-v2.js"></script>
+  <script src="script-smart.js"></script>
 </body>
 </html>
