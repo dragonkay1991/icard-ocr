@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>i-Kad OCR Scanner</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        padding: 10px;
+        text-align: center;
+        background: #f5f5f5;
+      }
+      #video {
+        border-radius: 8px;
+        background: #000;
+      }
+      #resultBox {
+        margin-top: 15px;
+        text-align: left;
+        background: #fff;
+        padding: 10px;
+        border-radius: 8px;
+        box-shadow: 0 0 4px rgba(0,0,0,0.1);
+        font-size: 14px;
+      }
+      button {
+        margin-top: 10px;
+        padding: 10px 18px;
+        font-size: 16px;
+        border-radius: 6px;
+        border: none;
+        background: #1976d2;
+        color: #fff;
+      }
+      button:disabled {
+        background: #999;
+      }
+      #log {
+        margin-top: 10px;
+        font-size: 12px;
+        text-align: left;
+        white-space: pre-wrap;
+      }
+    </style>
+
+    <!-- Tesseract.js OCR engine -->
+    <script src="https://unpkg.com/tesseract.js@4.0.2/dist/tesseract.min.js"></script>
+  </head>
+
+  <body>
+    <h2>i-Kad OCR Scanner</h2>
+
+    <video id="video" width="320" height="240" autoplay playsinline></video>
+    <canvas id="canvas" width="320" height="240" style="display:none;"></canvas>
+
+    <div>
+      <button id="scanBtn">Scan Card</button>
+    </div>
+
+    <div id="resultBox">
+      <strong>Extracted Data</strong>
+      <div id="fields"></div>
+    </div>
+
+    <div id="log"></div>
+
+    <!-- Load your JS logic -->
+    <script src="script.js"></script>
+  </body>
+</html>
