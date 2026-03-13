@@ -160,11 +160,13 @@ async function runSmartOCR() {
     return;
   }
 
+  /* IMPORTANT: ADDRESS stays for positioning only */
   const labels = [
     "NAME",
     "PASSPORT",
     "NATIONALITY",
     "EMPLOYER",
+    "ADDRESS",       // needed for correct EXPIRY DATE position
     "EXPIRY DATE"
   ];
 
@@ -242,6 +244,8 @@ async function runSmartOCR() {
   }
 
   for (const label of labels) {
+    if (label === "ADDRESS") continue; // do not extract ADDRESS
+
     const curBox = labelBoxes[label];
     if (!curBox) continue;
 
@@ -251,17 +255,22 @@ async function runSmartOCR() {
       ? labelBoxes[nextLabel].y0 - 10 * scale
       : upCanvas.height - 10 * scale;
 
-    if (yEndUp <= yStartUp) continue;
+    /* CONTROL GREEN BOX SIZE */
+    const MAX_VALUE_HEIGHT = 80 * scale; // tight box
 
-    const xStartUp = upCanvas.width * 0.1;
-    const xEndUp = upCanvas.width * 0.9;
+    let cropH = yEndUp - yStartUp;
+    if (cropH > MAX_VALUE_HEIGHT) cropH = MAX_VALUE_HEIGHT;
+
+    /* CONTROL WIDTH */
+    const xStartUp = upCanvas.width * 0.20;
+    const xEndUp = upCanvas.width * 0.80;
 
     const cropW = xEndUp - xStartUp;
-    const cropH = yEndUp - yStartUp;
 
     const cropCanvas = document.createElement("canvas");
     cropCanvas.width = cropW;
     cropCanvas.height = cropH;
+
     const cropCtx = cropCanvas.getContext("2d");
     cropCtx.drawImage(
       upCanvas,
@@ -275,7 +284,7 @@ async function runSmartOCR() {
       cropH
     );
 
-    drawBox({ x0: xStartUp, y0: yStartUp, x1: xEndUp, y1: yEndUp }, "#8bc34a", "VALUE");
+    drawBox({ x0: xStartUp, y0: yStartUp, x1: xEndUp, y1: yStartUp + cropH }, "#8bc34a", "VALUE");
 
     const cropDataURL = cropCanvas.toDataURL("image/png");
     const valResult = await Tesseract.recognize(cropDataURL, "eng", {
@@ -291,10 +300,13 @@ async function runSmartOCR() {
 
     if (!lines.length) continue;
 
-    if (label === "EMPLOYER") {
+    if (label === "NAME") {
       values[label] = lines.slice(0, 2).join(" ");
-    } else if (label === "NAME") {
+    } else if (label === "EMPLOYER") {
       values[label] = lines.slice(0, 2).join(" ");
+    } else if (label === "EXPIRY DATE") {
+      const match = lines.join(" ").match(/(\d{2}\/\d{2}\/\d{4})/);
+      values[label] = match ? match[1] : "";
     } else {
       values[label] = lines[0];
     }
